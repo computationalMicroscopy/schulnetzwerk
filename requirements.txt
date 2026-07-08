@@ -1,4 +1,4 @@
 streamlit
-DiscreteBayesianNetwork
+pgmpy
 scipy
 graphviz
