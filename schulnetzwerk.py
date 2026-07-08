@@ -1,14 +1,18 @@
 import streamlit as st
+import pandas as pd
 import graphviz
 from pgmpy.models import DiscreteBayesianNetwork
 from pgmpy.factors.discrete import TabularCPD
 from pgmpy.inference import VariableElimination
+from pgmpy.estimators import MaximumLikelihoodEstimator
+
+st.set_page_config(page_title="Advanced Schul-KI", layout="wide")
 
 # -----------------------------------------------------------------------------
-# 1. INITIALISIERUNG DES ORIGINALEN NETZWERKS
+# 1. MODELL-STRUKTUR & BASIS-WERTE
 # -----------------------------------------------------------------------------
 @st.cache_resource
-def init_custom_network():
+def get_initial_model():
     model = DiscreteBayesianNetwork([
         ('Vorkenntnisse', 'Verstaendnis'),
         ('Hausaufgaben', 'Verstaendnis'),
@@ -18,166 +22,113 @@ def init_custom_network():
         ('Verstaendnis', 'Pruefung_bestanden'),
         ('Pruefungsangst', 'Pruefung_bestanden')
     ])
-
-    cpd_vorkenntnisse = TabularCPD(variable='Vorkenntnisse', variable_card=2, values=[[0.3], [0.7]])
-    cpd_hausaufgaben = TabularCPD(variable='Hausaufgaben', variable_card=2, values=[[0.25], [0.75]])
-    cpd_mitarbeit = TabularCPD(variable='Mitarbeit', variable_card=2, values=[[0.3], [0.7]])
-    cpd_fehlzeiten = TabularCPD(variable='Fehlzeiten', variable_card=2, values=[[0.85], [0.15]])
-
-    cpd_pruefungsangst = TabularCPD(
-        variable='Pruefungsangst', variable_card=2,
-        values=[
-            [0.85, 0.40],  # Nein (0)
-            [0.15, 0.60]   # Ja (1)
-        ],
-        evidence=['Fehlzeiten'], evidence_card=[2]
-    )
-
-    cpd_verstaendnis = TabularCPD(
-        variable='Verstaendnis', variable_card=2,
-        values=[
-            [0.95, 0.99, 0.70, 0.85, 0.60, 0.80, 0.30, 0.50, 0.50, 0.75, 0.25, 0.45, 0.15, 0.35, 0.05, 0.15], # Gering (0)
-            [0.05, 0.01, 0.30, 0.15, 0.40, 0.20, 0.70, 0.50, 0.50, 0.25, 0.75, 0.55, 0.85, 0.65, 0.95, 0.85]  # Hoch (1)
-        ],
-        evidence=['Vorkenntnisse', 'Hausaufgaben', 'Mitarbeit', 'Fehlzeiten'],
-        evidence_card=[2, 2, 2, 2]
-    )
-
-    cpd_pruefung = TabularCPD(
-        variable='Pruefung_bestanden', variable_card=2,
-        values=[
-            [0.85, 0.95, 0.05, 0.25],  # Nein (0)
-            [0.15, 0.05, 0.95, 0.75]   # Ja (1)
-        ],
-        evidence=['Verstaendnis', 'Pruefungsangst'], evidence_card=[2, 2]
-    )
-
-    model.add_cpds(cpd_vorkenntnisse, cpd_hausaufgaben, cpd_mitarbeit, cpd_fehlzeiten, cpd_pruefungsangst, cpd_verstaendnis, cpd_pruefung)
-    return VariableElimination(model)
-
-inference = init_custom_network()
+    return model
 
 # -----------------------------------------------------------------------------
-# 2. OBERFLÄCHEN-LAYOUT CONFIG
+# 2. SEITENLEISTE & NAVIGATION
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="Schul-Frühwarnsystem", layout="wide")
-
-st.title("🎓 Pädagogisches Prognosemodell (Bayessches Netzwerk)")
-st.markdown("Simuliere den Einfluss von Fehlzeiten auf Prüfungsangst, Verständnis und den finalen Prüfungserfolg.")
-
-# Seitenleiste für Evidenz-Eingaben
-st.sidebar.header("📋 Schülerdaten eingeben")
-st.sidebar.markdown("*Unbekannte Faktoren werden statistisch geschätzt.*")
-
-evidence = {}
-display_states = {}
-
-def create_sidebar_input(label, key, options):
-    status = st.sidebar.radio(f"{label}:", ["Unbekannt"] + list(options.keys()), key=key)
-    if status != "Unbekannt":
-        evidence[key] = options[status]
-        display_states[key] = status
-    else:
-        display_states[key] = "Unbekannt"
-
-# Inputs generieren
-create_sidebar_input("Vorkenntnisse", "Vorkenntnisse", {"Schlecht": 0, "Gut": 1})
-st.sidebar.markdown("---")
-create_sidebar_input("Hausaufgaben", "Hausaufgaben", {"Schlecht/Unvollständig": 0, "Gut/Vollständig": 1})
-st.sidebar.markdown("---")
-create_sidebar_input("Mitarbeit", "Mitarbeit", {"Schlecht": 0, "Gut": 1})
-st.sidebar.markdown("---")
-create_sidebar_input("Fehlzeiten", "Fehlzeiten", {"Wenig/Normal": 0, "Viele Fehlzeiten": 1})
+st.sidebar.title("🛠️ Modell-Konfiguration")
+app_mode = st.sidebar.selectbox("Modus wählen", ["Interaktive Vorhersage", "Modell mit Daten trainieren"])
 
 # -----------------------------------------------------------------------------
-# 3. LIVE-INFERENZ BERECHNEN
+# 3. MODUS: TRAINING AUS CSV
 # -----------------------------------------------------------------------------
-# Hilfsfunktion zur Ermittlung der Wahrscheinlichkeiten für alle Knoten
-def get_prob(variable):
-    if variable in evidence:
-        return 100.0 if evidence[variable] == 1 else 0.0
-    res = inference.query(variables=[variable], evidence=evidence)
-    return res.values[1] * 100
-
-prob_pass = get_prob('Pruefung_bestanden')
-prob_verst = get_prob('Verstaendnis')
-prob_angst = get_prob('Pruefungsangst')
-
-# -----------------------------------------------------------------------------
-# 4. DASHBOARD STRUKTUR (ZWEI SPALTEN)
-# -----------------------------------------------------------------------------
-col1, col2 = st.columns([1, 1])
-
-with col1:
-    st.subheader("🔮 Analyseergebnis")
+if app_mode == "Modell mit Daten trainieren":
+    st.header("📂 Modell-Training via CSV")
+    st.info("Laden Sie eine CSV-Datei hoch. Die Spalten müssen exakt den Knotennamen entsprechen (0=Schlecht, 1=Gut).")
     
-    # Haupt-Metrik: Bestehens-Wahrscheinlichkeit
-    if prob_pass >= 75:
-        st.success(f"### Wahrscheinlichkeit Bestehen: {prob_pass:.1f}%")
-    elif prob_pass >= 40:
-        st.warning(f"### Wahrscheinlichkeit Bestehen: {prob_pass:.1f}%")
-    else:
-        st.error(f"### 🚨 Wahrscheinlichkeit Bestehen: {prob_pass:.1f}%")
-    st.progress(int(prob_pass))
+    uploaded_file = st.file_uploader("Wähle eine CSV Datei", type="csv")
     
-    st.markdown("---")
-    
-    # Zwischenknoten visualisieren
-    st.markdown(f"**🧠 Hohes Fachverständnis:** `{prob_verst:.1f}%`")
-    st.progress(int(prob_verst))
-    
-    st.markdown(f"**⚡ Akute Prüfungsangst:** `{prob_angst:.1f}%`")
-    st.progress(int(prob_angst))
-
-with col2:
-    st.subheader("📐 Kausale Verknüpfungen & Netzzustand")
-    
-    # Graphviz-Netzwerk dynamisch zeichnen
-    dot = graphviz.Digraph()
-    dot.attr(rankdir='LR', size='7,5')
-    
-    # Farben basierend auf Zustand vergeben
-    def get_node_color(key, default_color="white"):
-        return "#A0C4FF" if key in evidence else default_color
-
-    # Knoten hinzufügen
-    dot.node('V', f"Vorkenntnisse\n({display_states['Vorkenntnisse']})", style='filled', fillcolor=get_node_color('Vorkenntnisse'))
-    dot.node('H', f"Hausaufgaben\n({display_states['Hausaufgaben']})", style='filled', fillcolor=get_node_color('Hausaufgaben'))
-    dot.node('M', f"Mitarbeit\n({display_states['Mitarbeit']})", style='filled', fillcolor=get_node_color('Mitarbeit'))
-    dot.node('F', f"Fehlzeiten\n({display_states['Fehlzeiten']})", style='filled', fillcolor=get_node_color('Fehlzeiten'))
-    
-    # Intermediäre Knoten zeigen berechnete Wahrscheinlichkeiten
-    dot.node('Verst', f"Verständnis\n(Hoch: {prob_verst:.0f}%)", style='filled', fillcolor="#E2F0CB")
-    dot.node('Angst', f"Prüfungsangst\n(Ja: {prob_angst:.0f}%)", style='filled', fillcolor="#FFADAD" if prob_angst > 40 else "#FFFFFC")
-    
-    # Zielknoten einfärben
-    target_color = "#CAFFBF" if prob_pass >= 75 else ("#FDFFB6" if prob_pass >= 40 else "#FFADAD")
-    dot.node('Ziel', f"Prüfung bestanden\n(Ja: {prob_pass:.1f}%)", shape='box', style='filled', fillcolor=target_color)
-    
-    # Verbindungen (Kanten) setzen
-    dot.edge('V', 'Verst')
-    dot.edge('H', 'Verst')
-    dot.edge('M', 'Verst')
-    dot.edge('F', 'Verst')
-    dot.edge('F', 'Angst')
-    dot.edge('Verst', 'Ziel')
-    dot.edge('Angst', 'Ziel')
-    
-    st.graphviz_chart(dot)
+    if uploaded_file is not None:
+        data = pd.read_csv(uploaded_file)
+        st.write("Vorschau der Daten:")
+        st.dataframe(data.head())
+        
+        if st.button("Training starten"):
+            model = get_initial_model()
+            # Training mit Maximum Likelihood
+            mle = MaximumLikelihoodEstimator(model, data)
+            
+            try:
+                cpds = mle.get_parameters()
+                # Speichere die trainierten CPDs in der session_state
+                st.session_state['trained_cpds'] = {cpd.variable: cpd for cpd in cpds}
+                st.success("Erfolg! Das Modell wurde mit Ihren Daten trainiert.")
+            except Exception as e:
+                st.error(f"Fehler beim Training: {e}")
 
 # -----------------------------------------------------------------------------
-# 5. AKTIONEN & HINWEISE
+# 4. MODUS: VORHERSAGE & MANUELLE ANPASSUNG
 # -----------------------------------------------------------------------------
-st.markdown("---")
-st.subheader("📋 Vordefinierte Test-Szenarien")
+else:
+    st.header("📊 Interaktive Vorhersage & Experten-Input")
+    
+    # Tabs für bessere Übersicht
+    tab_pred, tab_expert = st.tabs(["🎯 Vorhersage", "⚙️ Wahrscheinlichkeiten (CPDs) anpassen"])
+    
+    model = get_initial_model()
+    
+    with tab_expert:
+        st.subheader("Manuelle Anpassung der Basis-Wahrscheinlichkeiten")
+        st.write("Passen Sie hier die 'A-priori'-Werte an (Wahrscheinlichkeit für 'Gut' bzw. 'Ja').")
+        
+        # Falls trainiert wurde, nimm die trainierten Werte als Startpunkt
+        def get_default_val(var, state_idx=1):
+            if 'trained_cpds' in st.session_state:
+                return float(st.session_state['trained_cpds'][var].values[state_idx])
+            return 0.7 # Default fallback
 
-# Buttons für die schnellen Szenariowechsel
-if st.button("🚀 Starte Domino-Effekt Szenario (Viele Fehlzeiten trotz guten Vorkenntnissen)"):
-    st.info("Bitte stelle dazu in der linken Leiste ein:\n"
-            "- Vorkenntnisse: Gut\n- Hausaufgaben: Schlecht/Unvollständig\n- Mitarbeit: Gut\n- Fehlzeiten: Viele Fehlzeiten")
+        v_val = st.slider("P(Vorkenntnisse = Gut)", 0.0, 1.0, get_default_val('Vorkenntnisse'))
+        h_val = st.slider("P(Hausaufgaben = Gut)", 0.0, 1.0, get_default_val('Hausaufgaben'))
+        m_val = st.slider("P(Mitarbeit = Gut)", 0.0, 1.0, get_default_val('Mitarbeit'))
+        f_val = st.slider("P(Hohe Fehlzeiten)", 0.0, 1.0, 0.15) # Default 15%
 
-st.markdown("""
-**Analyse des Netzwerks:**
-* **Der Fehlzeiten-Effekt:** Wenn du *Fehlzeiten* auf 'Viele' setzt, erhöht sich automatisch die *Prüfungsangst* auf **60%** (Szenariowert deiner CPD) und zeitgleich sinkt die Chance auf ein hohes *Verständnis*. 
-* **Erklärbarkeit:** Über die grafischen Prozentwerte siehst du sofort, ob ein schlechtes Abschneiden eher am mangelnden *Verständnis* (z.B. durch nicht gemachte Hausaufgaben) oder an der induzierten *Prüfungsangst* liegt.
-""")
+        # CPDs bauen (Manuell basierend auf Slidern)
+        cpd_v = TabularCPD('Vorkenntnisse', 2, [[1-v_val], [v_val]])
+        cpd_h = TabularCPD('Hausaufgaben', 2, [[1-h_val], [h_val]])
+        cpd_m = TabularCPD('Mitarbeit', 2, [[1-m_val], [m_val]])
+        cpd_f = TabularCPD('Fehlzeiten', 2, [[1-f_val], [f_val]])
+        
+        # Für komplexe abhängige Knoten nutzen wir hier die Original-Logik oder trainierte Werte
+        # (Zur Vereinfachung nehmen wir hier die trainierten oder die Standard-Tabellen)
+        if 'trained_cpds' in st.session_state:
+            cpd_angst = st.session_state['trained_cpds']['Pruefungsangst']
+            cpd_verst = st.session_state['trained_cpds']['Verstaendnis']
+            cpd_pruefung = st.session_state['trained_cpds']['Pruefung_bestanden']
+        else:
+            # Fallback auf Standardwerte aus dem vorigen Prompt
+            cpd_angst = TabularCPD('Pruefungsangst', 2, [[0.85, 0.40], [0.15, 0.60]], evidence=['Fehlzeiten'], evidence_card=[2])
+            cpd_verst = TabularCPD('Verstaendnis', 2, [[0.95, 0.99, 0.70, 0.85, 0.60, 0.80, 0.30, 0.50, 0.50, 0.75, 0.25, 0.45, 0.15, 0.35, 0.05, 0.15], [0.05, 0.01, 0.30, 0.15, 0.40, 0.20, 0.70, 0.50, 0.50, 0.25, 0.75, 0.55, 0.85, 0.65, 0.95, 0.85]], evidence=['Vorkenntnisse', 'Hausaufgaben', 'Mitarbeit', 'Fehlzeiten'], evidence_card=[2, 2, 2, 2])
+            cpd_pruefung = TabularCPD('Pruefung_bestanden', 2, [[0.85, 0.95, 0.05, 0.25], [0.15, 0.05, 0.95, 0.75]], evidence=['Verstaendnis', 'Pruefungsangst'], evidence_card=[2, 2])
+
+        model.add_cpds(cpd_v, cpd_h, cpd_m, cpd_f, cpd_angst, cpd_verst, cpd_pruefung)
+        inference = VariableElimination(model)
+
+    with tab_pred:
+        # Hier kommt die Logik aus der vorigen App hin (Evidenz wählen)
+        st.subheader("Aktuelles Schülerprofil")
+        evid = {}
+        c1, c2 = st.columns(2)
+        with c1:
+            v_ev = st.selectbox("Vorkenntnisse", ["Unbekannt", "Schlecht", "Gut"])
+            if v_ev != "Unbekannt": evid['Vorkenntnisse'] = 1 if v_ev == "Gut" else 0
+            
+            f_ev = st.selectbox("Fehlzeiten", ["Unbekannt", "Normal", "Viele"])
+            if f_ev != "Unbekannt": evid['Fehlzeiten'] = 1 if f_ev == "Viele" else 0
+        
+        with c2:
+            res = inference.query(variables=['Pruefung_bestanden'], evidence=evid)
+            prob = res.values[1] * 100
+            st.metric("Wahrscheinlichkeit Bestehen", f"{prob:.1f}%")
+            st.progress(int(prob))
+            
+            # Graph zeichnen
+            dot = graphviz.Digraph()
+            dot.edge('Vorkenntnisse', 'Verstaendnis')
+            dot.edge('Hausaufgaben', 'Verstaendnis')
+            dot.edge('Mitarbeit', 'Verstaendnis')
+            dot.edge('Fehlzeiten', 'Verstaendnis')
+            dot.edge('Fehlzeiten', 'Pruefungsangst')
+            dot.edge('Verstaendnis', 'Pruefung_bestanden')
+            dot.edge('Pruefungsangst', 'Pruefung_bestanden')
+            st.graphviz_chart(dot)
