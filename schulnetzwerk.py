@@ -9,7 +9,7 @@ from pgmpy.inference import VariableElimination
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def init_custom_network():
-    model = BayesianNetwork([
+    model = DiscreteBayesianNetwork([
         ('Vorkenntnisse', 'Verstaendnis'),
         ('Hausaufgaben', 'Verstaendnis'),
         ('Mitarbeit', 'Verstaendnis'),
